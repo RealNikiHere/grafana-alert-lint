@@ -16,26 +16,47 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # нужен main, чтобы проверить, что тег стоит на нём
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Verify tag matches pyproject version
-        env:
-          TAG: ${{ github.ref_name }}
+      - name: Verify tag is on main
+        # Тег можно поставить на любую ветку; публиковать чужой/непроверенный
+        # коммит нельзя, поэтому требуем, чтобы он был в истории main.
         run: |
-          tag="${TAG#v}"
-          version="$(python -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")"
-          if [ "$tag" != "$version" ]; then
-            echo "тег v$tag не совпадает с версией $version в pyproject.toml"; exit 1
+          git fetch --no-tags origin main
+          tip="$(git rev-parse origin/main)"
+          if [ "$GITHUB_SHA" != "$tip" ]; then
+            echo "тег v... стоит не на вершине main ($GITHUB_SHA != $tip) —"
+            echo "публиковать историю, которой нет в текущем main, нельзя"
+            exit 1
           fi
       - name: Install
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
+      - name: Verify tag matches package version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          tag="${TAG#v}"
+          version="$(python -c "import grafana_alert_lint; print(grafana_alert_lint.__version__)")"
+          if [ "$tag" != "$version" ]; then
+            echo "тег v$tag не совпадает с версией $version в grafana_alert_lint.__version__"; exit 1
+          fi
       - name: Test before build
         run: |
           ruff check .
+          ruff format --check .
           pytest
+          galint tests/fixtures/clean.yml
+          set +e
+          out="$(galint tests/fixtures/regression-0003.yml --format json)"
+          rc=$?
+          set -e
+          [ "$rc" -eq 1 ] || { echo "ожидался код 1, получен $rc"; exit 1; }
+          echo "$out" | grep -q '"code": "GAL001"'
       - name: Build and check metadata
         env:
           # фиксированное время сборки: два прогона дают одинаковый wheel
@@ -43,7 +64,7 @@ jobs:
         run: |
           python -m pip install --upgrade build twine
           python -m build
-          python -m twine check dist/*
+          python -m twine check --strict dist/*
       - uses: actions/upload-artifact@v4
         with:
           name: dist

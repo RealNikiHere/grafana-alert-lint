@@ -8,19 +8,29 @@ GAL001  error    сравнение в PromQL при `noDataState: Alerting`: н
                  сервисе серия отфильтрована, результат пуст, правило висит
                  в Firing и не закрывается
 GAL002  warning  noDataState=NoData: плановый разрыв метрик выглядит как авария
-GAL003  error    noDataState отсутствует или неизвестен
-GAL004  warning  нет `for` — правило срабатывает на первом промахе
+GAL003  error    noDataState отсутствует или неизвестен (Grafana принимает
+                 OK, Alerting, NoData, KeepLast; Error — только для execErrState)
+GAL004  warning  нет `for`, или значение не длительность Grafana —
+                 правило срабатывает на первом промахе
 GAL005  error    `<` в тексте аннотации: Grafana шлёт в Telegram с
                  parse_mode=HTML, Telegram отвечает 400, сообщение теряется
 GAL006  error    `condition` не задан, ссылается на отсутствующий refId или
                  `data` пуст
-GAL007  error    повторяющийся `uid` или `title` — провижининг молча
+GAL007  error    повторяющийся `uid` в пределах orgId — провижининг молча
                  перезапишет одно правило другим
+GAL007  warning  повторяющийся `title` в пределах (orgId, folder): Grafana до
+                 11.6 такое отвергает, с 11.6 разрешает, но правила сольются
+                 в одну группу уведомлений
 GAL008  warning  нет `labels.severity` — алерт не маршрутизируется по важности
 GAL009  warning  нет `annotations.summary` — сообщение без сути
 GAL010  warning  нет `execErrState` или значение неизвестно
 GAL011  warning  `for` короче интервала группы — дебаунс меньше шага оценки
 GAL012  error    у правила нет ни `uid`, ни `title` — его нельзя ни найти, ни замьютить
+GAL013  error    `interval` группы не разбирается как длительность Grafana
+
+GAL002, GAL004, GAL008, GAL009, GAL010 и GAL011 — вкусовые: они не про
+поломку провижининга, а про качество алертинга, поэтому по умолчанию молчат и
+включаются флагом `--opinionated` (см. `STYLE_CHECKS`).
 """
 
 from __future__ import annotations
@@ -35,6 +45,15 @@ import yaml
 
 LEVEL_ERROR = "error"
 LEVEL_WARNING = "warning"
+
+# Проверки про качество алертинга, а не про поломку провижининга: по умолчанию
+# молчат, включаются `--opinionated`. Иначе чужой прогон получает десятки
+# «нет severity» и не видит настоящей находки.
+STYLE_CHECKS = frozenset({"GAL002", "GAL004", "GAL008", "GAL009", "GAL010", "GAL011"})
+
+# Grafana нумерует организации с 1; в провижининге `orgId` можно не указывать.
+DEFAULT_ORG_ID = "1"
+DEFAULT_FOLDER = ""
 
 # Значения, которые принимает Grafana (KeepLast — «оставить прошлое состояние»).
 VALID_NO_DATA_STATES = {"OK", "Alerting", "NoData", "KeepLast"}
@@ -60,7 +79,7 @@ COMPARISON = re.compile(r"(==|!=|>=|<=|>|<)\s*(bool\b)?")
 # `<` начинает HTML-тег; `>` в тексте Telegram безвреден.
 INVALID_HTML = re.compile(r"<")
 
-DURATION_PART = re.compile(r"(\d+(?:\.\d+)?)(ms|s|m|h|d|w|y)")
+DURATION_PART = re.compile(r"(\d+)(ms|s|m|h|d|w|y)")
 DURATION_UNITS = {"ms": 0.001, "s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800, "y": 31536000}
 
 
@@ -94,9 +113,10 @@ class Finding:
 class LintState:
     """То, что должно быть уникально на весь провижининг, а не на один файл.
 
-    Grafana требует глобальной уникальности `uid` правил: два файла с одним
-    `uid` перезапишут друг друга молча. Поэтому состояние передаётся между
-    документами и файлами.
+    Границы уникальности в Grafana: `uid` — в пределах организации, `title` —
+    в пределах (организация, папка). Поэтому ключи включают `orgId` и `folder`:
+    одинаковый `uid` в `orgId: 1` и `orgId: 2` легален, а одинаковый `title`
+    правила в разных папках — разные правила.
 
     Контракт: состояние только накапливается и не очищается. Повторный вызов
     `lint_document` с тем же объектом на тех же данных даст ложные GAL007 —
@@ -104,16 +124,24 @@ class LintState:
     делает, по одному на запуск).
     """
 
-    uids: dict[str, str] = field(default_factory=dict)
-    titles: dict[tuple[str, str], str] = field(default_factory=dict)
+    uids: dict[tuple[str, str], str] = field(default_factory=dict)
+    titles: dict[tuple[str, str, str], str] = field(default_factory=dict)
 
 
 def parse_duration(value: Any) -> float | None:
-    """Grafana-длительность (`30s`, `1m`, `1h30m`, `1.5s`) в секунды."""
+    """Grafana-длительность (`30s`, `1m`, `1h30m`) в секунды.
+
+    Grafana разбирает длительности `model.ParseDuration`: только целые части,
+    без дробей (`1.5s` она отвергает). Огромные числа дают бесконечность или
+    `OverflowError` — такое значение тоже не длительность.
+    """
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        return float(value)
+        try:
+            return float(value)
+        except OverflowError:
+            return None
     if not isinstance(value, str):
         return None
     pos = 0
@@ -122,7 +150,10 @@ def parse_duration(value: Any) -> float | None:
     for match in DURATION_PART.finditer(value):
         if match.start() != pos:
             return None
-        total += float(match.group(1)) * DURATION_UNITS[match.group(2)]
+        try:
+            total += int(match.group(1)) * DURATION_UNITS[match.group(2)]
+        except (OverflowError, ValueError):
+            return None
         pos = match.end()
         found = True
     if not found or pos != len(value):
@@ -192,6 +223,17 @@ def rule_annotations(rule: dict[str, Any]) -> Iterable[tuple[str, str]]:
             yield str(key), value
 
 
+def _org_key(value: Any) -> str:
+    """`orgId` в сравнимый вид: `1`, `1.0` и `"1"` — одна организация."""
+    if value is None or isinstance(value, bool):
+        return DEFAULT_ORG_ID
+    if isinstance(value, float):
+        if not value.is_integer():
+            return str(value)
+        return str(int(value))
+    return as_scalar_str(value) or DEFAULT_ORG_ID
+
+
 def _label(rule: dict[str, Any], index: int) -> str:
     return str(rule.get("title") or rule.get("uid") or f"rule[{index}]")
 
@@ -203,8 +245,12 @@ def lint_rule(
     group: str,
     index: int,
     group_interval: float | None,
+    opinionated: bool = False,
 ) -> list[Finding]:
-    """Проверяет одно правило и возвращает найденные проблемы."""
+    """Проверяет одно правило и возвращает найденные проблемы.
+
+    `opinionated` включает вкусовые проверки из `STYLE_CHECKS`.
+    """
     name = _label(rule, index)
     findings: list[Finding] = []
 
@@ -217,11 +263,23 @@ def lint_rule(
     filtering = [expr for expr in expressions if is_filtering_expression(expr)]
 
     if raw_no_data is None:
-        add("GAL003", LEVEL_ERROR, "noDataState не задан: поведение по умолчанию зависит от версии Grafana")
+        add(
+            "GAL003",
+            LEVEL_ERROR,
+            "noDataState не задан: поведение по умолчанию зависит от версии Grafana",
+        )
     elif no_data is None:
-        add("GAL003", LEVEL_ERROR, f"noDataState={raw_no_data!r} — не строка и не число, Grafana его не примет")
+        add(
+            "GAL003",
+            LEVEL_ERROR,
+            f"noDataState={raw_no_data!r} — не строка и не число, Grafana его не примет",
+        )
     elif no_data not in VALID_NO_DATA_STATES:
-        add("GAL003", LEVEL_ERROR, f"noDataState={no_data!r} — допустимо {sorted(VALID_NO_DATA_STATES)}")
+        add(
+            "GAL003",
+            LEVEL_ERROR,
+            f"noDataState={no_data!r} — допустимо {sorted(VALID_NO_DATA_STATES)}",
+        )
     elif no_data == "Alerting" and filtering:
         add(
             "GAL001",
@@ -241,9 +299,7 @@ def lint_rule(
         )
 
     raw_for = rule.get("for")
-    for_is_duration = parse_duration(raw_for) is not None or (
-        raw_for == 0 and not isinstance(raw_for, bool)
-    )
+    for_is_duration = parse_duration(raw_for) is not None
     if raw_for is None or raw_for == "":
         add("GAL004", LEVEL_WARNING, "нет for — срабатывание на первом же промахе")
     elif not for_is_duration:
@@ -270,11 +326,21 @@ def lint_rule(
     if raw_condition is None:
         add("GAL006", LEVEL_ERROR, "condition не задан — правило не знает, что оценивать")
     elif condition is None:
-        add("GAL006", LEVEL_ERROR, f"condition={raw_condition!r} — не строка, Grafana его не примет")
+        add(
+            "GAL006", LEVEL_ERROR, f"condition={raw_condition!r} — не строка, Grafana его не примет"
+        )
     elif not ref_ids:
-        add("GAL006", LEVEL_ERROR, "condition задан, но в data нет ни одного refId — оценивать нечего")
+        add(
+            "GAL006",
+            LEVEL_ERROR,
+            "condition задан, но в data нет ни одного refId — оценивать нечего",
+        )
     elif condition not in ref_ids:
-        add("GAL006", LEVEL_ERROR, f"condition={condition!r} ссылается на отсутствующий refId {sorted(ref_ids)}")
+        add(
+            "GAL006",
+            LEVEL_ERROR,
+            f"condition={condition!r} ссылается на отсутствующий refId {sorted(ref_ids)}",
+        )
 
     labels = rule.get("labels") or {}
     if not isinstance(labels, dict) or not as_scalar_str(labels.get("severity")):
@@ -287,11 +353,23 @@ def lint_rule(
     raw_exec_err = rule.get("execErrState")
     exec_err = as_scalar_str(raw_exec_err)
     if raw_exec_err is None:
-        add("GAL010", LEVEL_WARNING, "нет execErrState — ошибка вычисления обработается по умолчанию")
+        add(
+            "GAL010",
+            LEVEL_WARNING,
+            "нет execErrState — ошибка вычисления обработается по умолчанию",
+        )
     elif exec_err is None:
-        add("GAL010", LEVEL_WARNING, f"execErrState={raw_exec_err!r} — не строка, Grafana его не примет")
+        add(
+            "GAL010",
+            LEVEL_WARNING,
+            f"execErrState={raw_exec_err!r} — не строка, Grafana его не примет",
+        )
     elif exec_err not in VALID_EXEC_ERR_STATES:
-        add("GAL010", LEVEL_WARNING, f"execErrState={exec_err!r} — допустимо {sorted(VALID_EXEC_ERR_STATES)}")
+        add(
+            "GAL010",
+            LEVEL_WARNING,
+            f"execErrState={exec_err!r} — допустимо {sorted(VALID_EXEC_ERR_STATES)}",
+        )
 
     rule_for = parse_duration(rule.get("for"))
     if group_interval is not None and rule_for is not None and 0 < rule_for < group_interval:
@@ -307,6 +385,8 @@ def lint_rule(
     if not has_uid and not has_title:
         add("GAL012", LEVEL_ERROR, "нет ни uid, ни title — правило нельзя найти или замьютить")
 
+    if not opinionated:
+        findings = [finding for finding in findings if finding.code not in STYLE_CHECKS]
     return findings
 
 
@@ -315,8 +395,12 @@ def lint_document(
     path: str = "<memory>",
     *,
     state: LintState | None = None,
+    opinionated: bool = False,
 ) -> list[Finding]:
-    """Проверяет один YAML-документ с группами правил."""
+    """Проверяет один YAML-документ с группами правил.
+
+    `opinionated` включает вкусовые проверки из `STYLE_CHECKS`.
+    """
     if not isinstance(doc, dict):
         return []
     state = state if state is not None else LintState()
@@ -326,8 +410,26 @@ def lint_document(
         if not isinstance(group, dict):
             continue
         group_name = str(group.get("name") or "?")
-        interval = parse_duration(group.get("interval"))
+        org_id = _org_key(group.get("orgId"))
+        folder = as_scalar_str(group.get("folder")) or DEFAULT_FOLDER
+        raw_interval = group.get("interval")
+        interval = parse_duration(raw_interval)
         if interval is None:
+            if raw_interval is not None:
+                # Молчаливая подстановка 60 с выдала бы чужое число за
+                # настоящий интервал группы.
+                findings.append(
+                    Finding(
+                        "GAL013",
+                        LEVEL_ERROR,
+                        path,
+                        group_name,
+                        "(группа)",
+                        f"interval={raw_interval!r} не разбирается как длительность "
+                        "Grafana (например 30s, 1m, 1h30m) — правило будет "
+                        "оцениваться не так, как задумано",
+                    )
+                )
             interval = DEFAULT_GROUP_INTERVAL_SECONDS
         for index, rule in enumerate(as_list(group.get("rules"))):
             if not isinstance(rule, dict):
@@ -335,7 +437,7 @@ def lint_document(
             name = _label(rule, index)
             uid_key = as_scalar_str(rule.get("uid"))
             if uid_key not in (None, ""):
-                key = uid_key
+                key = (org_id, uid_key)
                 if key in state.uids:
                     findings.append(
                         Finding(
@@ -344,35 +446,39 @@ def lint_document(
                             path,
                             group_name,
                             name,
-                            f"uid={key!r} уже занят правилом {state.uids[key]!r} — "
-                            "провижининг перезапишет одно из них",
+                            f"uid={uid_key!r} уже занят правилом {state.uids[key]!r} "
+                            f"(orgId={org_id}) — провижининг перезапишет одно из них",
                         )
                     )
                 else:
                     state.uids[key] = name
             # `title` — своё поле: uid одного правила не должен считаться
-            # дублем title другого.
+            # дублем title другого. Регистрируется и для recording rules: их
+            # title тоже занимает имя в папке.
             title_value = as_scalar_str(rule.get("title"))
-            if isinstance(rule.get("record"), dict):
-                # Grafana-managed recording rule: нет condition/noDataState и не
-                # должно быть — проверки алертов к нему неприменимы.
-                continue
-            title_key = (group_name, title_value or "")
+            title_key = (org_id, folder, title_value or "")
             if title_value in (None, ""):
                 pass
             elif title_key in state.titles:
                 findings.append(
                     Finding(
                         "GAL007",
-                        LEVEL_ERROR,
+                        LEVEL_WARNING,
                         path,
                         group_name,
                         name,
-                        "правило с таким title уже есть в группе — различать их будет нечем",
+                        "правило с таким title уже есть в этой папке "
+                        f"(orgId={org_id}, folder={folder or '—'}) — до Grafana 11.6 "
+                        "провижининг его отвергнет, с 11.6 разрешит, но правила "
+                        "попадут в одну группу уведомлений",
                     )
                 )
             else:
                 state.titles[title_key] = name
+            if isinstance(rule.get("record"), dict):
+                # Grafana-managed recording rule: нет condition/noDataState и не
+                # должно быть — проверки алертов к нему неприменимы.
+                continue
             findings.extend(
                 lint_rule(
                     rule,
@@ -380,6 +486,7 @@ def lint_document(
                     group=group_name,
                     index=index,
                     group_interval=interval,
+                    opinionated=opinionated,
                 )
             )
     return findings
@@ -402,6 +509,7 @@ def lint_path(
     *,
     state: LintState | None = None,
     max_bytes: int | None = DEFAULT_MAX_FILE_BYTES,
+    opinionated: bool = False,
 ) -> list[Finding]:
     """Проверяет один файл (в нём может быть несколько YAML-документов).
 
@@ -433,7 +541,7 @@ def lint_path(
         # целиком лежать в памяти как список, а глубоко вложенный YAML даёт
         # RecursionError, а не YAMLError.
         for doc in yaml.safe_load_all(text):
-            findings.extend(lint_document(doc, str(path), state=state))
+            findings.extend(lint_document(doc, str(path), state=state, opinionated=opinionated))
     except (yaml.YAMLError, RecursionError) as exc:
         raise LintError(f"{path}: YAML не разбирается: {exc}", findings) from exc
     return findings

@@ -62,7 +62,8 @@ def test_strict_promotes_warnings(tmp_path):
     path = tmp_path / "warn.yml"
     path.write_text(WARN_ONLY, encoding="utf-8")
     assert main([str(path)]) == EXIT_OK
-    assert main([str(path), "--strict"]) == EXIT_FINDINGS
+    assert main([str(path), "--opinionated"]) == EXIT_OK
+    assert main([str(path), "--opinionated", "--strict"]) == EXIT_FINDINGS
 
 
 def test_json_format(tmp_path, capsys):
@@ -101,7 +102,5 @@ def test_broken_yaml_is_usage_error(tmp_path, capsys):
 
 def test_multiple_documents(tmp_path):
     path = tmp_path / "multi.yml"
-    path.write_text(
-        "groups: []\n---\n" + BROKEN, encoding="utf-8"
-    )
+    path.write_text("groups: []\n---\n" + BROKEN, encoding="utf-8")
     assert main([str(path)]) == EXIT_FINDINGS

@@ -43,7 +43,11 @@ def base_rule(**overrides):
             },
             {
                 "refId": "B",
-                "model": {"datasource": {"type": "__expr__", "uid": "__expr__"}, "expression": "A", "refId": "B"},
+                "model": {
+                    "datasource": {"type": "__expr__", "uid": "__expr__"},
+                    "expression": "A",
+                    "refId": "B",
+                },
             },
         ],
     }
@@ -52,7 +56,7 @@ def base_rule(**overrides):
 
 
 def codes_of(doc) -> list[str]:
-    return [finding.code for finding in lint_document(doc)]
+    return [finding.code for finding in lint_document(doc, opinionated=True)]
 
 
 def test_clean_fixture_is_clean():
@@ -67,10 +71,15 @@ def test_regression_0003_is_caught():
 
 
 def test_filtering_expression_with_alerting_no_data():
-    assert codes_of(base_rule(noDataState="Alerting", data=[
-        {"refId": "A", "model": {"expr": "up{job=\"node\"} != 1", "refId": "A"}},
-        {"refId": "B", "model": {"type": "threshold", "expression": "A", "refId": "B"}},
-    ])) == ["GAL001"]
+    assert codes_of(
+        base_rule(
+            noDataState="Alerting",
+            data=[
+                {"refId": "A", "model": {"expr": 'up{job="node"} != 1', "refId": "A"}},
+                {"refId": "B", "model": {"type": "threshold", "expression": "A", "refId": "B"}},
+            ],
+        )
+    ) == ["GAL001"]
 
 
 def test_raw_metric_with_alerting_is_allowed():
@@ -89,7 +98,7 @@ def test_no_data_state_unknown_value():
 
 
 def test_no_data_state_no_data_warns():
-    findings = lint_document(base_rule(noDataState="NoData"))
+    findings = lint_document(base_rule(noDataState="NoData"), opinionated=True)
     assert [f.code for f in findings] == ["GAL002"]
     assert findings[0].level == "warning"
 
@@ -165,7 +174,15 @@ def test_query_expressions_skip_expr_models():
 
 @pytest.mark.parametrize(
     ("value", "expected"),
-    [("30s", 30.0), ("1m", 60.0), ("1h30m", 5400.0), ("2d", 172800.0), ("", None), ("5", None), ("1x", None)],
+    [
+        ("30s", 30.0),
+        ("1m", 60.0),
+        ("1h30m", 5400.0),
+        ("2d", 172800.0),
+        ("", None),
+        ("5", None),
+        ("1x", None),
+    ],
 )
 def test_parse_duration(value, expected):
     assert parse_duration(value) == expected

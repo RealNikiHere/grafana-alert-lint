@@ -58,6 +58,7 @@ def rule(**overrides):
 
 
 def codes(doc, **kwargs):
+    kwargs.setdefault("opinionated", True)  # вкусовые проверки нужны почти всем тестам
     return [(f.code, f.level) for f in lint_document(doc, **kwargs)]
 
 
@@ -157,11 +158,13 @@ def test_backtick_string_with_operator_does_not_trigger_gal001():
 # --- уровни и частичная идентичность ------------------------------------
 
 
-def test_duplicate_title_with_different_uids_is_error():
+def test_duplicate_title_with_different_uids_is_warning():
+    # Grafana 11.6+ разрешает одинаковые title (PR #102067), поэтому это
+    # предупреждение, а не ошибка: CI на валидном провижининге не падает.
     first = rule(uid="a", title="Одинаковый")["groups"][0]["rules"][0]
     second = rule(uid="b", title="Одинаковый")["groups"][0]["rules"][0]
     doc = {"groups": [{"name": "g", "interval": "1m", "rules": [first, second]}]}
-    assert ("GAL007", "error") in codes(doc)
+    assert ("GAL007", "warning") in codes(doc)
 
 
 def test_invalid_exec_err_state_is_warning():
@@ -181,7 +184,19 @@ def test_error_levels_are_stable():
         "GAL009": "warning",
         "GAL010": "warning",
     }
-    found = dict(codes(rule(uid=None, title=None, **{"for": None}, noDataState="Error", labels={}, annotations={}, execErrState=None)))
+    found = dict(
+        codes(
+            rule(
+                uid=None,
+                title=None,
+                **{"for": None},
+                noDataState="Error",
+                labels={},
+                annotations={},
+                execErrState=None,
+            )
+        )
+    )
     for code, level in expected.items():
         assert found.get(code) == level, (code, found)
 
@@ -227,7 +242,7 @@ def test_error_findings_sort_before_warnings(tmp_path, capsys):
         "        data: [{refId: A, model: {expr: up, refId: A}}]\n",
         encoding="utf-8",
     )
-    assert main([str(path)]) == EXIT_FINDINGS
+    assert main([str(path), "--opinionated"]) == EXIT_FINDINGS
     lines = [line for line in capsys.readouterr().out.splitlines() if "GAL" in line]
     assert "error" in lines[0] and "warning" in lines[1]
 
@@ -259,7 +274,13 @@ def bare(**overrides):
 
 
 def codes_of_rules(*rules):
-    return [(f.code, f.level) for f in lint_document({"groups": [{"name": "g", "interval": "1m", "rules": list(rules)}]})]
+    return [
+        (f.code, f.level)
+        for f in lint_document(
+            {"groups": [{"name": "g", "interval": "1m", "rules": list(rules)}]},
+            opinionated=True,
+        )
+    ]
 
 
 @pytest.mark.parametrize(
@@ -347,7 +368,9 @@ def test_max_file_size_zero_disables_limit(tmp_path):
 
 def test_threshold_model_without_expr_datasource_is_not_promql():
     model = {"type": "threshold", "expression": "A == 0", "refId": "B"}
-    rule = bare(uid="u", noDataState="Alerting", condition="B", data=[{"refId": "B", "model": model}])
+    rule = bare(
+        uid="u", noDataState="Alerting", condition="B", data=[{"refId": "B", "model": model}]
+    )
     assert codes_of_rules(rule) == []
 
 
@@ -409,7 +432,9 @@ def test_ignore_flag_drops_code_and_exit_code(tmp_path, capsys):
     path.write_text(BROKEN, encoding="utf-8")  # GAL005 + GAL003/GAL006
     assert main([str(path)]) == EXIT_FINDINGS
     capsys.readouterr()  # первый прогон печатал GAL005 — он не считается
-    assert main([str(path), "--ignore", "GAL005,GAL003,GAL006,GAL004,GAL008,GAL009,GAL010"]) == EXIT_OK
+    assert (
+        main([str(path), "--ignore", "GAL005,GAL003,GAL006,GAL004,GAL008,GAL009,GAL010"]) == EXIT_OK
+    )
     assert "GAL005" not in capsys.readouterr().out
 
 

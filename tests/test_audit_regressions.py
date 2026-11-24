@@ -54,6 +54,7 @@ def rule(**overrides):
 
 
 def codes(doc, **kwargs):
+    kwargs.setdefault("opinionated", True)  # вкусовые проверки нужны почти всем тестам
     return [finding.code for finding in lint_document(doc, **kwargs)]
 
 
@@ -109,7 +110,15 @@ def test_all_comparison_operators_are_filtering(expr):
 def test_integer_uid_duplicate_is_caught():
     first = rule(uid=1, title="Первое")
     second = rule(uid=1, title="Второе")
-    doc = {"groups": [{"name": "g", "interval": "1m", "rules": [first["groups"][0]["rules"][0], second["groups"][0]["rules"][0]]}]}
+    doc = {
+        "groups": [
+            {
+                "name": "g",
+                "interval": "1m",
+                "rules": [first["groups"][0]["rules"][0], second["groups"][0]["rules"][0]],
+            }
+        ]
+    }
     assert codes(doc) == ["GAL007"]
 
 
@@ -137,11 +146,19 @@ def test_group_without_interval_uses_grafana_default():
     assert "GAL011" in codes(doc)
 
 
-@pytest.mark.parametrize("value", ["1w", "1.5s", "2y", "1h30m"])
+@pytest.mark.parametrize("value", ["1w", "2y", "1h30m"])
 def test_parse_duration_extended_units(value):
     from grafana_alert_lint.linter import parse_duration
 
     assert parse_duration(value) is not None
+
+
+@pytest.mark.parametrize("value", ["1.5s", "0.5m", "1.5h30m"])
+def test_parse_duration_rejects_fractional_values(value):
+    # model.ParseDuration в Grafana читает только целые части.
+    from grafana_alert_lint.linter import parse_duration
+
+    assert parse_duration(value) is None
 
 
 def test_for_zero_is_not_missing_debounce():
@@ -155,11 +172,24 @@ def test_non_dict_group_rule_and_data_are_skipped():
     doc = {
         "groups": [
             "мусор",
-            {"name": "g", "rules": [1, "строка", {"uid": "r", "title": "t", "condition": "A",
-                                                 "for": "1m", "noDataState": "OK",
-                                                 "execErrState": "OK", "labels": {"severity": "x"},
-                                                 "annotations": {"summary": "x"},
-                                                 "data": ["x", {"refId": "A", "model": "notadict"}]}]},
+            {
+                "name": "g",
+                "rules": [
+                    1,
+                    "строка",
+                    {
+                        "uid": "r",
+                        "title": "t",
+                        "condition": "A",
+                        "for": "1m",
+                        "noDataState": "OK",
+                        "execErrState": "OK",
+                        "labels": {"severity": "x"},
+                        "annotations": {"summary": "x"},
+                        "data": ["x", {"refId": "A", "model": "notadict"}],
+                    },
+                ],
+            },
         ]
     }
     findings = lint_document(doc)
@@ -207,8 +237,14 @@ def test_json_output_survives_path_errors(tmp_path, capsys):
 def test_multiple_files_share_uid_registry(tmp_path, capsys):
     first = tmp_path / "a.yml"
     second = tmp_path / "b.yml"
-    first.write_text("groups: [{name: g, interval: 1m, rules: [{uid: shared, title: A, condition: A, for: 1m, noDataState: OK, execErrState: OK, labels: {severity: x}, annotations: {summary: x}, data: [{refId: A, model: {expr: up, refId: A}}]}]}]\n", encoding="utf-8")
-    second.write_text("groups: [{name: g2, interval: 1m, rules: [{uid: shared, title: B, condition: A, for: 1m, noDataState: OK, execErrState: OK, labels: {severity: x}, annotations: {summary: x}, data: [{refId: A, model: {expr: up, refId: A}}]}]}]\n", encoding="utf-8")
+    first.write_text(
+        "groups: [{name: g, interval: 1m, rules: [{uid: shared, title: A, condition: A, for: 1m, noDataState: OK, execErrState: OK, labels: {severity: x}, annotations: {summary: x}, data: [{refId: A, model: {expr: up, refId: A}}]}]}]\n",
+        encoding="utf-8",
+    )
+    second.write_text(
+        "groups: [{name: g2, interval: 1m, rules: [{uid: shared, title: B, condition: A, for: 1m, noDataState: OK, execErrState: OK, labels: {severity: x}, annotations: {summary: x}, data: [{refId: A, model: {expr: up, refId: A}}]}]}]\n",
+        encoding="utf-8",
+    )
     assert main([str(first), str(second)]) == EXIT_FINDINGS
     assert "GAL007" in capsys.readouterr().out
 

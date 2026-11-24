@@ -1,4 +1,8 @@
-"""CLI: `galint <файлы или каталоги> [--format text|json] [--strict]`."""
+"""CLI: `galint <файлы или каталоги> [--format text|json] [--strict] [--opinionated]`.
+
+Флаги: `--format text|json`, `--strict`, `--opinionated`, `--max-file-size`,
+`--ignore CODES`, `--version`.
+"""
 
 from __future__ import annotations
 
@@ -17,6 +21,17 @@ EXIT_USAGE = 2
 
 SUFFIXES = {".yml", ".yaml"}
 SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__"}
+
+
+def non_negative_int(text: str) -> int:
+    """`--max-file-size`: байты, 0 — без лимита, отрицательное — ошибка ввода."""
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} — не целое число байт") from None
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"{text} — отрицательный размер; 0 означает «без лимита»")
+    return value
 
 
 def collect_paths(targets: list[Path]) -> tuple[list[Path], list[str]]:
@@ -60,9 +75,29 @@ def collect_paths(targets: list[Path]) -> tuple[list[Path], list[str]]:
                         add(candidate)
         elif target.is_file():
             add(target)
+        elif target.exists() or target.is_symlink():
+            # FIFO, символьное устройство или битый симлинк: читать нельзя,
+            # но «нет такого файла» — неправда.
+            errors.append(
+                f"{target}: не обычный файл (FIFO, устройство или битый симлинк) — пропущен"
+            )
         else:
             errors.append(f"{target}: нет такого файла или каталога")
     return files, errors
+
+
+def configure_stdio() -> None:
+    """Никогда не падать на печати: YAML умеет порождать непарные суррогаты
+    (`uid: "a\\ud800"`), а `print()` в UTF-8 на них бросает UnicodeEncodeError —
+    трейсбек вместо отчёта и потеря находок."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(errors="backslashreplace")
+        except (ValueError, OSError):  # закрытый или не-текстовый поток
+            pass
 
 
 def render_text(findings: list[Finding], path_errors: list[str] | None = None) -> str:
@@ -98,7 +133,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="Линтер провижиненных правил алертов Grafana",
         epilog="Коды проверок описаны в README и в docstring модуля grafana_alert_lint.linter.",
     )
-    parser.add_argument("paths", nargs="+", type=Path, help="файлы или каталоги с правилами Grafana")
+    parser.add_argument(
+        "paths", nargs="+", type=Path, help="файлы или каталоги с правилами Grafana"
+    )
     parser.add_argument("--format", choices=("text", "json"), default="text", help="вид отчёта")
     parser.add_argument(
         "--strict",
@@ -106,11 +143,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="предупреждения считать ошибками (для CI на новом репозитории)",
     )
     parser.add_argument(
+        "--opinionated",
+        action="store_true",
+        help="включить вкусовые проверки (GAL002, GAL004, GAL008, GAL009, GAL010, GAL011)",
+    )
+    parser.add_argument(
         "--max-file-size",
-        type=int,
+        type=non_negative_int,
         default=DEFAULT_MAX_FILE_BYTES,
         metavar="BYTES",
-        help=f"пропускать файлы больше этого размера (по умолчанию {DEFAULT_MAX_FILE_BYTES}; 0 — без лимита)",
+        help=f"файл больше этого размера — ошибка чтения (по умолчанию {DEFAULT_MAX_FILE_BYTES}; 0 — без лимита)",
     )
     parser.add_argument(
         "--ignore",
@@ -124,6 +166,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     """Возвращает код выхода. `--help`/`--version` обрабатывает argparse сам."""
+    configure_stdio()
     args = build_parser().parse_args(argv)
     files, path_errors = collect_paths(args.paths)
 
@@ -131,7 +174,14 @@ def main(argv: list[str] | None = None) -> int:
     state = LintState()  # уникальность uid/title — на весь запуск, а не на файл
     for path in files:
         try:
-            findings.extend(lint_path(path, state=state, max_bytes=args.max_file_size))
+            findings.extend(
+                lint_path(
+                    path,
+                    state=state,
+                    max_bytes=args.max_file_size,
+                    opinionated=args.opinionated,
+                )
+            )
         except LintError as exc:
             # находки из уже разобранных документов не выбрасываем
             findings.extend(exc.findings)

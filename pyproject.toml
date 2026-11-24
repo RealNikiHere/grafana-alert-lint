@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "grafana-alert-lint"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Линтер провижиненных правил алертов Grafana: находит правила, которые молча не работают"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -20,12 +20,13 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: System :: Monitoring",
 ]
 dependencies = ["PyYAML>=6.0"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.6"]
+dev = ["pytest>=8,<10", "ruff>=0.6,<1"]
 
 [project.scripts]
 galint = "grafana_alert_lint.cli:main"
@@ -38,6 +39,9 @@ Changelog = "https://github.com/RealNikiHere/grafana-alert-lint/blob/main/CHANGE
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.dynamic]
+version = {attr = "grafana_alert_lint.__version__"}
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
