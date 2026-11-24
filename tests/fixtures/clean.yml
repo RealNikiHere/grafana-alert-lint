@@ -1,0 +1,65 @@
+# Чистые правила: те же, что сейчас на живом сервере после разбора 0003.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: niki-server
+    folder: Niki-Server
+    interval: 1m
+    rules:
+      - uid: node-down
+        title: Node exporter недоступен
+        condition: B
+        for: 2m
+        noDataState: Alerting
+        execErrState: Alerting
+        labels:
+          severity: critical
+          component: node
+        annotations:
+          summary: 'Сервер не отдаёт метрики: up равно 0 или данных нет'
+          description: >-
+            node-exporter не отвечает или сервер выключен. Метрики диска и
+            сервисов не собираются.
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              expr: 'up{job="node"}'
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: A
+              type: threshold
+              refId: B
+
+      - uid: disk-critical
+        title: Диск заполнен больше 90 процентов
+        condition: B
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: critical
+          component: disk
+        annotations:
+          summary: 'Свободно меньше 10 процентов'
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              expr: 'node_filesystem_avail_bytes / node_filesystem_size_bytes'
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: A
+              type: threshold
+              refId: B

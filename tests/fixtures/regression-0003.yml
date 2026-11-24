@@ -1,0 +1,29 @@
+# Правило из инцидента 2026-11-23: `up == 0` + noDataState: Alerting.
+# На здоровом сервере серия пуста, правило висит в Firing и не закрывается.
+
+groups:
+  - name: niki-server
+    interval: 1m
+    rules:
+      - uid: node-down
+        title: Node exporter недоступен
+        condition: B
+        for: 2m
+        noDataState: Alerting
+        execErrState: Alerting
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Сервер не отдаёт метрики: up равно 0 или данных нет'
+        data:
+          - refId: A
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              expr: 'up{job="node"} == 0'
+              refId: A
+          - refId: B
+            model:
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: A
+              type: threshold
+              refId: B
