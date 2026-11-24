@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Линтер провижиненных правил алертов Grafana: находит правила, которые молча не работают"
 readme = "README.md"
 requires-python = ">=3.10"
-license = "MIT"
+license = "Apache-2.0"
 authors = [{ name = "Niki" }]
 keywords = ["grafana", "alerting", "prometheus", "lint", "observability", "sre"]
 classifiers = [
