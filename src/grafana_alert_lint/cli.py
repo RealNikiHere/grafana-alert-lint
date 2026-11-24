@@ -52,7 +52,11 @@ def collect_paths(targets: list[Path]) -> tuple[list[Path], list[str]]:
                 dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS)
                 for name in sorted(names):
                     candidate = Path(root) / name
-                    if candidate.suffix.lower() in SUFFIXES:
+                    if candidate.suffix.lower() not in SUFFIXES:
+                        continue
+                    # FIFO и симлинк на /dev/zero блокируют read_text навсегда:
+                    # линтуем только обычные файлы (симлинк на файл — можно).
+                    if candidate.is_file():
                         add(candidate)
         elif target.is_file():
             add(target)

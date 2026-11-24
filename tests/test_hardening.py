@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -360,3 +361,44 @@ def test_parse_duration_and_as_list_contract():
     assert parse_duration("1h30m") == 5400.0
     assert as_list("строка") == []
     assert as_list({"a": 1}) == []
+
+
+def test_recording_rules_are_skipped(tmp_path, capsys):
+    path = tmp_path / "rules.yml"
+    path.write_text(
+        "groups:\n"
+        "  - name: g\n"
+        "    interval: 1m\n"
+        "    rules:\n"
+        "      - uid: rec1\n"
+        "        record: {metric: job:up:sum, from: up}\n"
+        "        data:\n"
+        "          - refId: A\n"
+        "            model: {expr: up, refId: A}\n",
+        encoding="utf-8",
+    )
+    assert main([str(path)]) == EXIT_OK
+    assert "GAL" not in capsys.readouterr().out
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="нужен mkfifo")
+def test_fifo_in_directory_is_skipped_not_read(tmp_path, capsys):
+    (tmp_path / "rules.yml").write_text("groups: []\n", encoding="utf-8")
+    os.mkfifo(tmp_path / "pipe.yml")
+    assert main([str(tmp_path)]) == EXIT_OK
+    assert "ошибок: 0" in capsys.readouterr().out
+
+
+def test_symlink_to_device_is_skipped(tmp_path, capsys):
+    if not Path("/dev/zero").exists():
+        pytest.skip("нет /dev/zero")
+    target = tmp_path / "rules.yml"
+    target.write_text("groups: []\n", encoding="utf-8")
+    (tmp_path / "zero.yml").symlink_to("/dev/zero")
+    assert main([str(tmp_path)]) == EXIT_OK
+
+
+def test_default_limit_is_small_enough():
+    from grafana_alert_lint.linter import DEFAULT_MAX_FILE_BYTES
+
+    assert DEFAULT_MAX_FILE_BYTES <= 8 * 1024 * 1024

@@ -45,8 +45,8 @@ DEFAULT_GROUP_INTERVAL_SECONDS = 60.0
 
 # Разбор YAML амплифицирует память примерно в 70-80 раз к размеру файла:
 # 30 МВ файла — это >2 ГБ RSS. Реальные провижининги — килобайты, поэтому
-# по умолчанию отказываемся от файлов больше 32 МВ с понятной ошибкой.
-DEFAULT_MAX_FILE_BYTES = 32 * 1024 * 1024
+# по умолчанию отказываемся от файлов больше 4 МиБ (это уже ~300 МБ памяти).
+DEFAULT_MAX_FILE_BYTES = 4 * 1024 * 1024
 
 # Модели вычислений Grafana: у них поле `expression`, а не PromQL.
 EXPR_MODEL_TYPES = {"threshold", "math", "reduce", "resample"}
@@ -352,6 +352,10 @@ def lint_document(
             # `title` — своё поле: uid одного правила не должен считаться
             # дублем title другого.
             title_value = as_scalar_str(rule.get("title"))
+            if isinstance(rule.get("record"), dict):
+                # Grafana-managed recording rule: нет condition/noDataState и не
+                # должно быть — проверки алертов к нему неприменимы.
+                continue
             title_key = (group_name, title_value or "")
             if title_value in (None, ""):
                 pass
