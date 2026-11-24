@@ -32,6 +32,9 @@ galint = "grafana_alert_lint.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/RealNikiHere/grafana-alert-lint"
+Repository = "https://github.com/RealNikiHere/grafana-alert-lint"
+Issues = "https://github.com/RealNikiHere/grafana-alert-lint/issues"
+Changelog = "https://github.com/RealNikiHere/grafana-alert-lint/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 where = ["src"]

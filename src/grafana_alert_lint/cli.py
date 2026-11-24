@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .linter import Finding, LintError, LintState, lint_path
+from .linter import DEFAULT_MAX_FILE_BYTES, Finding, LintError, LintState, lint_path
 
 EXIT_OK = 0
 EXIT_FINDINGS = 1
@@ -101,6 +101,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="предупреждения считать ошибками (для CI на новом репозитории)",
     )
+    parser.add_argument(
+        "--max-file-size",
+        type=int,
+        default=DEFAULT_MAX_FILE_BYTES,
+        metavar="BYTES",
+        help=f"пропускать файлы больше этого размера (по умолчанию {DEFAULT_MAX_FILE_BYTES}; 0 — без лимита)",
+    )
     parser.add_argument("--version", action="version", version=f"galint {__version__}")
     return parser
 
@@ -114,9 +121,13 @@ def main(argv: list[str] | None = None) -> int:
     state = LintState()  # уникальность uid/title — на весь запуск, а не на файл
     for path in files:
         try:
-            findings.extend(lint_path(path, state=state))
+            findings.extend(lint_path(path, state=state, max_bytes=args.max_file_size))
         except LintError as exc:
+            # находки из уже разобранных документов не выбрасываем
+            findings.extend(exc.findings)
             path_errors.append(str(exc))
+        except Exception as exc:  # noqa: BLE001 — последний предохранитель: без трейсбека
+            path_errors.append(f"{path}: внутренняя ошибка {type(exc).__name__}: {exc}")
 
     if args.format == "json":
         print(render_json(findings, path_errors))

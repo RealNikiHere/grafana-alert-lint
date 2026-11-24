@@ -238,3 +238,125 @@ def test_deeply_nested_yaml_is_an_error_not_a_traceback(tmp_path, capsys):
     captured = capsys.readouterr()
     assert "YAML не разбирается" in captured.err
     assert "Traceback" not in captured.err
+
+
+# --- третий проход аудита: типы YAML и дедуп ----------------------------
+
+
+def bare(**overrides):
+    base = {
+        "condition": "A",
+        "for": "1m",
+        "noDataState": "OK",
+        "execErrState": "OK",
+        "labels": {"severity": "x"},
+        "annotations": {"summary": "s"},
+        "data": [{"refId": "A", "model": {"expr": "up", "refId": "A"}}],
+    }
+    base.update(overrides)
+    return base
+
+
+def codes_of_rules(*rules):
+    return [(f.code, f.level) for f in lint_document({"groups": [{"name": "g", "interval": "1m", "rules": list(rules)}]})]
+
+
+@pytest.mark.parametrize(
+    "rule",
+    [
+        bare(data=[{"refId": "A", "model": {"type": {"a": 1}, "expr": "up"}}]),
+        bare(noDataState={"x": 1}),
+        bare(data=[{"refId": {"a": 1}, "model": {"expr": "up"}}]),
+        bare(data=[{"refId": 1, "model": {"expr": "up"}}, {"refId": "A", "model": {"expr": "up"}}]),
+        bare(execErrState=["OK"]),
+        bare(labels={"severity": {"a": 1}}),
+        bare(annotations={"summary": ["a"]}),
+        bare(condition={"a": 1}),
+    ],
+)
+def test_unhashable_yaml_values_do_not_crash(rule):
+    assert isinstance(lint_document({"groups": [{"name": "g", "rules": [rule]}]}), list)
+
+
+def test_dict_no_data_state_is_reported():
+    assert ("GAL003", "error") in codes_of_rules(bare(noDataState={"x": 1}, uid="u"))
+
+
+def test_dict_ref_id_does_not_kill_condition_check():
+    codes = codes_of_rules(bare(data=[{"refId": {"a": 1}, "model": {"expr": "up"}}], uid="u"))
+    assert ("GAL006", "error") in codes
+
+
+def test_uid_of_one_rule_is_not_title_duplicate_of_another():
+    # uid="x" без title и title="x" без uid — разные правила, дубля нет.
+    assert codes_of_rules(bare(uid="x"), bare(title="x")) == []
+
+
+def test_missing_title_does_not_collide_across_rules():
+    assert codes_of_rules(bare(uid="a"), bare(uid="b")) == []
+
+
+def test_numeric_zero_uid_is_a_uid():
+    assert codes_of_rules(bare(uid=0)) == []
+
+
+@pytest.mark.parametrize("bad_for", [False, ["1m"], {"v": 1}])
+def test_invalid_for_type_is_reported(bad_for):
+    assert ("GAL004", "warning") in codes_of_rules(bare(uid="u", **{"for": bad_for}))
+
+
+def test_findings_from_parsed_documents_survive_parse_error_later(tmp_path, capsys):
+    path = tmp_path / "multi.yml"
+    path.write_text(
+        "groups:\n"
+        "  - name: g\n"
+        "    interval: 1m\n"
+        "    rules:\n"
+        "      - uid: ok\n"
+        "        title: ok\n"
+        "        condition: A\n"
+        "        for: 5m\n"
+        "        noDataState: OK\n"
+        "        execErrState: OK\n"
+        "        labels: {severity: x}\n"
+        "        annotations: {summary: 'a < b'}\n"
+        "        data: [{refId: A, model: {expr: up, refId: A}}]\n"
+        "---\n"
+        "groups: [\n",
+        encoding="utf-8",
+    )
+    assert main([str(path)]) == EXIT_USAGE
+    captured = capsys.readouterr()
+    assert "GAL005" in captured.out
+    assert "YAML не разбирается" in captured.err
+
+
+def test_max_file_size_is_enforced(tmp_path, capsys):
+    path = tmp_path / "big.yml"
+    path.write_text("groups: []\n" + "# filler\n" * 100, encoding="utf-8")
+    assert main([str(path), "--max-file-size", "10"]) == EXIT_USAGE
+    assert "больше лимита" in capsys.readouterr().err
+
+
+def test_max_file_size_zero_disables_limit(tmp_path):
+    path = tmp_path / "big.yml"
+    path.write_text("groups: []\n", encoding="utf-8")
+    assert main([str(path), "--max-file-size", "0"]) == EXIT_OK
+
+
+def test_threshold_model_without_expr_datasource_is_not_promql():
+    model = {"type": "threshold", "expression": "A == 0", "refId": "B"}
+    rule = bare(uid="u", noDataState="Alerting", condition="B", data=[{"refId": "B", "model": model}])
+    assert codes_of_rules(rule) == []
+
+
+def test_numeric_and_string_uid_collide():
+    assert ("GAL007", "error") in codes_of_rules(bare(uid=1, title="a"), bare(uid="1", title="b"))
+
+
+def test_parse_duration_and_as_list_contract():
+    from grafana_alert_lint.linter import as_list
+
+    assert parse_duration("1h30m") == 5400.0
+    assert as_list("строка") == []
+    assert as_list({"a": 1}) == []

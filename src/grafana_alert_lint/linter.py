@@ -43,6 +43,11 @@ VALID_EXEC_ERR_STATES = {"OK", "Alerting", "Error", "KeepLast"}
 # Grafana оценивает правило раз в минуту, если интервал группы не задан.
 DEFAULT_GROUP_INTERVAL_SECONDS = 60.0
 
+# Разбор YAML амплифицирует память примерно в 70-80 раз к размеру файла:
+# 30 МВ файла — это >2 ГБ RSS. Реальные провижининги — килобайты, поэтому
+# по умолчанию отказываемся от файлов больше 32 МВ с понятной ошибкой.
+DEFAULT_MAX_FILE_BYTES = 32 * 1024 * 1024
+
 # Модели вычислений Grafana: у них поле `expression`, а не PromQL.
 EXPR_MODEL_TYPES = {"threshold", "math", "reduce", "resample"}
 
@@ -92,6 +97,11 @@ class LintState:
     Grafana требует глобальной уникальности `uid` правил: два файла с одним
     `uid` перезапишут друг друга молча. Поэтому состояние передаётся между
     документами и файлами.
+
+    Контракт: состояние только накапливается и не очищается. Повторный вызов
+    `lint_document` с тем же объектом на тех же данных даст ложные GAL007 —
+    для нового независимого прогона создавайте новый `LintState` (CLI так и
+    делает, по одному на запуск).
     """
 
     uids: dict[str, str] = field(default_factory=dict)
@@ -140,6 +150,18 @@ def as_list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
+def as_scalar_str(value: Any) -> str | None:
+    """Скаляр YAML → строка; словарь/список (невалидные для этих полей) → None.
+
+    Grafana-поля вроде `noDataState` или `refId` — строки. Значение-словарь в
+    этом месте означает поломанный провижининг, но линтер не должен падать
+    на `unhashable type: 'dict'`: такое поле считается незаданным.
+    """
+    if isinstance(value, (str, int, float, bool)):
+        return str(value)
+    return None
+
+
 def query_expressions(rule: dict[str, Any]) -> list[str]:
     """PromQL всех запросов правила, без служебных моделей вычислений."""
     out: list[str] = []
@@ -149,7 +171,7 @@ def query_expressions(rule: dict[str, Any]) -> list[str]:
         model = item.get("model") or {}
         if not isinstance(model, dict):
             continue
-        if model.get("type") in EXPR_MODEL_TYPES:
+        if as_scalar_str(model.get("type")) in EXPR_MODEL_TYPES:
             continue
         datasource = model.get("datasource") or {}
         if isinstance(datasource, dict) and datasource.get("uid") == "__expr__":
@@ -189,12 +211,15 @@ def lint_rule(
     def add(code: str, level: str, message: str) -> None:
         findings.append(Finding(code, level, path, group, name, message))
 
-    no_data = rule.get("noDataState")
+    raw_no_data = rule.get("noDataState")
+    no_data = as_scalar_str(raw_no_data)
     expressions = query_expressions(rule)
     filtering = [expr for expr in expressions if is_filtering_expression(expr)]
 
-    if no_data is None:
+    if raw_no_data is None:
         add("GAL003", LEVEL_ERROR, "noDataState не задан: поведение по умолчанию зависит от версии Grafana")
+    elif no_data is None:
+        add("GAL003", LEVEL_ERROR, f"noDataState={raw_no_data!r} — не строка и не число, Grafana его не примет")
     elif no_data not in VALID_NO_DATA_STATES:
         add("GAL003", LEVEL_ERROR, f"noDataState={no_data!r} — допустимо {sorted(VALID_NO_DATA_STATES)}")
     elif no_data == "Alerting" and filtering:
@@ -214,8 +239,14 @@ def lint_rule(
             "будет выглядеть как авария",
         )
 
-    if rule.get("for") in (None, ""):
+    raw_for = rule.get("for")
+    for_is_duration = parse_duration(raw_for) is not None or (
+        raw_for == 0 and not isinstance(raw_for, bool)
+    )
+    if raw_for is None or raw_for == "":
         add("GAL004", LEVEL_WARNING, "нет for — срабатывание на первом же промахе")
+    elif not for_is_duration:
+        add("GAL004", LEVEL_WARNING, f"for={raw_for!r} — не длительность и не число секунд")
 
     for key, value in rule_annotations(rule):
         if INVALID_HTML.search(value):
@@ -227,29 +258,37 @@ def lint_rule(
             )
 
     ref_ids = {
-        item.get("refId")
+        ref
         for item in as_list(rule.get("data"))
-        if isinstance(item, dict) and item.get("refId")
+        if isinstance(item, dict)
+        for ref in [as_scalar_str(item.get("refId"))]
+        if ref
     }
-    condition = rule.get("condition")
-    if not condition:
+    raw_condition = rule.get("condition")
+    condition = as_scalar_str(raw_condition)
+    if raw_condition is None:
         add("GAL006", LEVEL_ERROR, "condition не задан — правило не знает, что оценивать")
+    elif condition is None:
+        add("GAL006", LEVEL_ERROR, f"condition={raw_condition!r} — не строка, Grafana его не примет")
     elif not ref_ids:
         add("GAL006", LEVEL_ERROR, "condition задан, но в data нет ни одного refId — оценивать нечего")
     elif condition not in ref_ids:
         add("GAL006", LEVEL_ERROR, f"condition={condition!r} ссылается на отсутствующий refId {sorted(ref_ids)}")
 
     labels = rule.get("labels") or {}
-    if not isinstance(labels, dict) or not labels.get("severity"):
+    if not isinstance(labels, dict) or not as_scalar_str(labels.get("severity")):
         add("GAL008", LEVEL_WARNING, "нет labels.severity — нечем маршрутизировать уведомления")
 
     annotations = rule.get("annotations") or {}
-    if not isinstance(annotations, dict) or not annotations.get("summary"):
+    if not isinstance(annotations, dict) or not as_scalar_str(annotations.get("summary")):
         add("GAL009", LEVEL_WARNING, "нет annotations.summary — в сообщении не будет сути")
 
-    exec_err = rule.get("execErrState")
-    if exec_err is None:
+    raw_exec_err = rule.get("execErrState")
+    exec_err = as_scalar_str(raw_exec_err)
+    if raw_exec_err is None:
         add("GAL010", LEVEL_WARNING, "нет execErrState — ошибка вычисления обработается по умолчанию")
+    elif exec_err is None:
+        add("GAL010", LEVEL_WARNING, f"execErrState={raw_exec_err!r} — не строка, Grafana его не примет")
     elif exec_err not in VALID_EXEC_ERR_STATES:
         add("GAL010", LEVEL_WARNING, f"execErrState={exec_err!r} — допустимо {sorted(VALID_EXEC_ERR_STATES)}")
 
@@ -262,7 +301,9 @@ def lint_rule(
             f"({group_interval:g}s) — дебаунс не длиннее шага оценки",
         )
 
-    if not rule.get("uid") and not rule.get("title"):
+    has_uid = as_scalar_str(rule.get("uid")) not in (None, "")
+    has_title = as_scalar_str(rule.get("title")) not in (None, "")
+    if not has_uid and not has_title:
         add("GAL012", LEVEL_ERROR, "нет ни uid, ни title — правило нельзя найти или замьютить")
 
     return findings
@@ -284,15 +325,16 @@ def lint_document(
         if not isinstance(group, dict):
             continue
         group_name = str(group.get("name") or "?")
-        raw_interval = group.get("interval")
-        interval = parse_duration(raw_interval) if raw_interval else DEFAULT_GROUP_INTERVAL_SECONDS
+        interval = parse_duration(group.get("interval"))
+        if interval is None:
+            interval = DEFAULT_GROUP_INTERVAL_SECONDS
         for index, rule in enumerate(as_list(group.get("rules"))):
             if not isinstance(rule, dict):
                 continue
             name = _label(rule, index)
-            uid = rule.get("uid")
-            if uid is not None and uid != "":
-                key = str(uid)
+            uid_key = as_scalar_str(rule.get("uid"))
+            if uid_key not in (None, ""):
+                key = uid_key
                 if key in state.uids:
                     findings.append(
                         Finding(
@@ -307,8 +349,13 @@ def lint_document(
                     )
                 else:
                     state.uids[key] = name
-            title_key = (group_name, name)
-            if title_key in state.titles:
+            # `title` — своё поле: uid одного правила не должен считаться
+            # дублем title другого.
+            title_value = as_scalar_str(rule.get("title"))
+            title_key = (group_name, title_value or "")
+            if title_value in (None, ""):
+                pass
+            elif title_key in state.titles:
                 findings.append(
                     Finding(
                         "GAL007",
@@ -334,15 +381,42 @@ def lint_document(
 
 
 class LintError(Exception):
-    """Файл не читается или не разбирается как YAML."""
+    """Файл не читается или не разбирается как YAML.
+
+    `findings` — то, что успели найти в уже разобранных документах файла:
+    ошибка в третьем документе не должна отменять находки из первых двух.
+    """
+
+    def __init__(self, message: str, findings: list[Finding] | None = None) -> None:
+        super().__init__(message)
+        self.findings: list[Finding] = findings or []
 
 
-def lint_path(path: Path, *, state: LintState | None = None) -> list[Finding]:
+def lint_path(
+    path: Path,
+    *,
+    state: LintState | None = None,
+    max_bytes: int | None = DEFAULT_MAX_FILE_BYTES,
+) -> list[Finding]:
     """Проверяет один файл (в нём может быть несколько YAML-документов).
 
     Состояние уникальности (`uid`, `title`) по умолчанию своё на файл; чтобы
     ловить дубли между файлами, передайте общий `LintState`.
+
+    `max_bytes` ограничивает размер файла (по умолчанию 32 МВ): разбор YAML
+    раздувает память на порядок, и файл на сотни мегабайт — это OOM, а не
+    линт. `None` или `0` — без ограничения.
     """
+    if max_bytes:
+        try:
+            size = path.stat().st_size
+        except OSError as exc:
+            raise LintError(f"{path}: не читается: {exc}") from exc
+        if size > max_bytes:
+            raise LintError(
+                f"{path}: файл {size} байт больше лимита {max_bytes} — "
+                "поднимите его флагом --max-file-size (0 — без лимита)"
+            )
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
@@ -356,5 +430,5 @@ def lint_path(path: Path, *, state: LintState | None = None) -> list[Finding]:
         for doc in yaml.safe_load_all(text):
             findings.extend(lint_document(doc, str(path), state=state))
     except (yaml.YAMLError, RecursionError) as exc:
-        raise LintError(f"{path}: YAML не разбирается: {exc}") from exc
+        raise LintError(f"{path}: YAML не разбирается: {exc}", findings) from exc
     return findings
