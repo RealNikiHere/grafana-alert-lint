@@ -47,7 +47,7 @@ DEFAULT_GROUP_INTERVAL_SECONDS = 60.0
 EXPR_MODEL_TYPES = {"threshold", "math", "reduce", "resample"}
 
 # Строковые литералы и матчеры лейблов: их содержимое — не выражения.
-STRING_LITERAL = re.compile(r'"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'')
+STRING_LITERAL = re.compile(r'"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'|`[^`]*`')
 LABEL_MATCHERS = re.compile(r"\{[^}]*\}")
 # Сравнение вне `bool`-модификатора отбрасывает серии: именно это и создаёт
 # пустой результат на здоровом сервисе.
@@ -134,10 +134,16 @@ def is_filtering_expression(expr: str) -> bool:
     return False
 
 
+def as_list(value: Any) -> list[Any]:
+    """Список или пустой список: скаляр в позиции списка встречается в
+    поломанном провижининге и не должен ронять линтер трейсбеком."""
+    return value if isinstance(value, list) else []
+
+
 def query_expressions(rule: dict[str, Any]) -> list[str]:
     """PromQL всех запросов правила, без служебных моделей вычислений."""
     out: list[str] = []
-    for item in rule.get("data") or []:
+    for item in as_list(rule.get("data")):
         if not isinstance(item, dict):
             continue
         model = item.get("model") or {}
@@ -196,8 +202,9 @@ def lint_rule(
             "GAL001",
             LEVEL_ERROR,
             "noDataState=Alerting при фильтрующем выражении "
-            f"{filtering[0]!r}: на здоровом сервисе серия отфильтрована, "
-            "результат пуст — правило застрянет в Firing и не закроется",
+            f"{filtering[0]!r}: сравнение отбрасывает серии, поэтому на "
+            "здоровом состоянии результат пуст (или серия остаётся только при "
+            "аварии) — правило не закрывается само; проверьте порог живьём",
         )
     elif no_data == "NoData":
         add(
@@ -221,7 +228,7 @@ def lint_rule(
 
     ref_ids = {
         item.get("refId")
-        for item in (rule.get("data") or [])
+        for item in as_list(rule.get("data"))
         if isinstance(item, dict) and item.get("refId")
     }
     condition = rule.get("condition")
@@ -273,13 +280,13 @@ def lint_document(
     state = state if state is not None else LintState()
     findings: list[Finding] = []
 
-    for group in doc.get("groups") or []:
+    for group in as_list(doc.get("groups")):
         if not isinstance(group, dict):
             continue
         group_name = str(group.get("name") or "?")
         raw_interval = group.get("interval")
         interval = parse_duration(raw_interval) if raw_interval else DEFAULT_GROUP_INTERVAL_SECONDS
-        for index, rule in enumerate(group.get("rules") or []):
+        for index, rule in enumerate(as_list(group.get("rules"))):
             if not isinstance(rule, dict):
                 continue
             name = _label(rule, index)
@@ -338,14 +345,16 @@ def lint_path(path: Path, *, state: LintState | None = None) -> list[Finding]:
     """
     try:
         text = path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         raise LintError(f"{path}: не читается: {exc}") from exc
-    try:
-        documents = list(yaml.safe_load_all(text))
-    except yaml.YAMLError as exc:
-        raise LintError(f"{path}: YAML не разбирается: {exc}") from exc
     state = state if state is not None else LintState()
     findings: list[Finding] = []
-    for doc in documents:
-        findings.extend(lint_document(doc, str(path), state=state))
+    try:
+        # Документы читаются по одному: файл на десятки мегабайт не обязан
+        # целиком лежать в памяти как список, а глубоко вложенный YAML даёт
+        # RecursionError, а не YAMLError.
+        for doc in yaml.safe_load_all(text):
+            findings.extend(lint_document(doc, str(path), state=state))
+    except (yaml.YAMLError, RecursionError) as exc:
+        raise LintError(f"{path}: YAML не разбирается: {exc}") from exc
     return findings

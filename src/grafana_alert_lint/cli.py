@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -19,19 +20,42 @@ SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__"}
 
 
 def collect_paths(targets: list[Path]) -> tuple[list[Path], list[str]]:
-    """Разворачивает каталоги в список YAML-файлов, собирая ошибки чтения."""
+    """Разворачивает каталоги в список YAML-файлов, собирая ошибки чтения.
+
+    Файл попадает в список один раз, даже если он передан дважды (каталог +
+    путь внутри, повтор пути): иначе одно правило проверялось бы дважды и
+    линтер выдал бы ложный дубль `uid`.
+
+    Каталог, который не читается (нет прав), — это ошибка, а не «чисто»:
+    иначе CI на таком каталоге молча покажет ноль находок.
+    """
     files: list[Path] = []
     errors: list[str] = []
+    seen: set[Path] = set()
+
+    def add(candidate: Path) -> None:
+        try:
+            key = candidate.resolve()
+        except OSError:
+            key = candidate.absolute()
+        if key in seen:
+            return
+        seen.add(key)
+        files.append(candidate)
+
+    def on_walk_error(exc: OSError) -> None:
+        errors.append(f"{exc.filename}: {exc.strerror or exc}")
+
     for target in targets:
         if target.is_dir():
-            for candidate in sorted(target.rglob("*")):
-                if candidate.suffix.lower() not in SUFFIXES:
-                    continue
-                if SKIP_DIRS & set(candidate.parts):
-                    continue
-                files.append(candidate)
+            for root, dirs, names in os.walk(target, onerror=on_walk_error):
+                dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS)
+                for name in sorted(names):
+                    candidate = Path(root) / name
+                    if candidate.suffix.lower() in SUFFIXES:
+                        add(candidate)
         elif target.is_file():
-            files.append(target)
+            add(target)
         else:
             errors.append(f"{target}: нет такого файла или каталога")
     return files, errors

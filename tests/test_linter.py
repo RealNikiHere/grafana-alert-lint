@@ -63,7 +63,7 @@ def test_regression_0003_is_caught():
     findings = lint_path(FIXTURES / "regression-0003.yml")
     assert [f.code for f in findings] == ["GAL001"]
     assert findings[0].level == "error"
-    assert "застрянет в Firing" in findings[0].message
+    assert "не закрывается само" in findings[0].message
 
 
 def test_filtering_expression_with_alerting_no_data():
