@@ -36,6 +36,7 @@ GAL002, GAL004, GAL008, GAL009, GAL010 и GAL011 — вкусовые: они н
 from __future__ import annotations
 
 import re
+import stat
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -139,9 +140,10 @@ def parse_duration(value: Any) -> float | None:
         return None
     if isinstance(value, (int, float)):
         try:
-            return float(value)
+            seconds = float(value)
         except OverflowError:
             return None
+        return seconds if seconds >= 0 else None
     if not isinstance(value, str):
         return None
     pos = 0
@@ -205,7 +207,13 @@ def query_expressions(rule: dict[str, Any]) -> list[str]:
         if as_scalar_str(model.get("type")) in EXPR_MODEL_TYPES:
             continue
         datasource = model.get("datasource") or {}
+        # `datasource` бывает словарём, но встречается и строкой uid; плюс
+        # отдельное поле `datasourceUid` на уровне запроса.
         if isinstance(datasource, dict) and datasource.get("uid") == "__expr__":
+            continue
+        if as_scalar_str(datasource) == "__expr__":
+            continue
+        if as_scalar_str(item.get("datasourceUid")) == "__expr__":
             continue
         for key in ("expr", "expression"):
             expr = model.get(key)
@@ -221,6 +229,14 @@ def rule_annotations(rule: dict[str, Any]) -> Iterable[tuple[str, str]]:
     for key, value in annotations.items():
         if isinstance(value, str):
             yield str(key), value
+
+
+def _non_blank(value: Any) -> str | None:
+    """Скаляр, в котором есть хоть один непробельный символ, иначе None."""
+    scalar = as_scalar_str(value)
+    if scalar is None or not scalar.strip():
+        return None
+    return scalar
 
 
 def _org_key(value: Any) -> str:
@@ -343,11 +359,11 @@ def lint_rule(
         )
 
     labels = rule.get("labels") or {}
-    if not isinstance(labels, dict) or not as_scalar_str(labels.get("severity")):
+    if not isinstance(labels, dict) or not _non_blank(labels.get("severity")):
         add("GAL008", LEVEL_WARNING, "нет labels.severity — нечем маршрутизировать уведомления")
 
     annotations = rule.get("annotations") or {}
-    if not isinstance(annotations, dict) or not as_scalar_str(annotations.get("summary")):
+    if not isinstance(annotations, dict) or not _non_blank(annotations.get("summary")):
         add("GAL009", LEVEL_WARNING, "нет annotations.summary — в сообщении не будет сути")
 
     raw_exec_err = rule.get("execErrState")
@@ -413,24 +429,39 @@ def lint_document(
         org_id = _org_key(group.get("orgId"))
         folder = as_scalar_str(group.get("folder")) or DEFAULT_FOLDER
         raw_interval = group.get("interval")
+        if raw_interval == "":
+            raw_interval = None
         interval = parse_duration(raw_interval)
-        if interval is None:
-            if raw_interval is not None:
-                # Молчаливая подстановка 60 с выдала бы чужое число за
-                # настоящий интервал группы.
-                findings.append(
-                    Finding(
-                        "GAL013",
-                        LEVEL_ERROR,
-                        path,
-                        group_name,
-                        "(группа)",
-                        f"interval={raw_interval!r} не разбирается как длительность "
-                        "Grafana (например 30s, 1m, 1h30m) — правило будет "
-                        "оцениваться не так, как задумано",
-                    )
-                )
+        if raw_interval is None:
+            # Grafana подставляет свой интервал группы; для сравнения с `for`
+            # берём её дефолт — минуту.
             interval = DEFAULT_GROUP_INTERVAL_SECONDS
+        elif interval is None:
+            findings.append(
+                Finding(
+                    "GAL013",
+                    LEVEL_ERROR,
+                    path,
+                    group_name,
+                    "(группа)",
+                    f"interval={raw_interval!r} не разбирается как длительность "
+                    "Grafana (например 30s, 1m, 1h30m) — правило будет "
+                    "оцениваться не так, как задумано",
+                )
+            )
+            interval = None  # 60 с на место битого значения — враньё в GAL011
+        elif interval <= 0:
+            findings.append(
+                Finding(
+                    "GAL013",
+                    LEVEL_ERROR,
+                    path,
+                    group_name,
+                    "(группа)",
+                    f"interval={raw_interval!r} — Grafana требует больше нуля",
+                )
+            )
+            interval = None
         for index, rule in enumerate(as_list(group.get("rules"))):
             if not isinstance(rule, dict):
                 continue
@@ -520,11 +551,16 @@ def lint_path(
     раздувает память примерно в 70-80 раз, и файл в десятки мегабайт — это
     OOM, а не линт. `None` или `0` — без ограничения.
     """
+    try:
+        stat_result = path.stat()
+    except OSError as exc:
+        raise LintError(f"{path}: не читается: {exc}") from exc
+    if not stat.S_ISREG(stat_result.st_mode):
+        # FIFO и символьные устройства не заканчиваются никогда: read_text на
+        # /dev/zero или на канале без писателя висит навсегда.
+        raise LintError(f"{path}: не обычный файл (FIFO, устройство или каталог) — не читаю")
     if max_bytes:
-        try:
-            size = path.stat().st_size
-        except OSError as exc:
-            raise LintError(f"{path}: не читается: {exc}") from exc
+        size = stat_result.st_size
         if size > max_bytes:
             raise LintError(
                 f"{path}: файл {size} байт больше лимита {max_bytes} — "

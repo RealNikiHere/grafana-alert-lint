@@ -61,7 +61,15 @@ def collect_paths(targets: list[Path]) -> tuple[list[Path], list[str]]:
     def on_walk_error(exc: OSError) -> None:
         errors.append(f"{exc.filename}: {exc.strerror or exc}")
 
+    seen_targets: set[Path] = set()
     for target in targets:
+        try:
+            target_key = target.resolve()
+        except OSError:
+            target_key = target.absolute()
+        if target_key in seen_targets:
+            continue
+        seen_targets.add(target_key)
         if target.is_dir():
             for root, dirs, names in os.walk(target, onerror=on_walk_error):
                 dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS)
