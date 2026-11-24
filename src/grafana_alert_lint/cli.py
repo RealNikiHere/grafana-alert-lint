@@ -112,6 +112,12 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="BYTES",
         help=f"пропускать файлы больше этого размера (по умолчанию {DEFAULT_MAX_FILE_BYTES}; 0 — без лимита)",
     )
+    parser.add_argument(
+        "--ignore",
+        metavar="CODES",
+        default="",
+        help="не считать находками перечисленные коды через запятую (например, GAL001)",
+    )
     parser.add_argument("--version", action="version", version=f"galint {__version__}")
     return parser
 
@@ -132,6 +138,10 @@ def main(argv: list[str] | None = None) -> int:
             path_errors.append(str(exc))
         except Exception as exc:  # noqa: BLE001 — последний предохранитель: без трейсбека
             path_errors.append(f"{path}: внутренняя ошибка {type(exc).__name__}: {exc}")
+
+    ignored = {code.strip().upper() for code in args.ignore.split(",") if code.strip()}
+    if ignored:
+        findings = [finding for finding in findings if finding.code not in ignored]
 
     if args.format == "json":
         print(render_json(findings, path_errors))

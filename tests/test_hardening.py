@@ -402,3 +402,41 @@ def test_default_limit_is_small_enough():
     from grafana_alert_lint.linter import DEFAULT_MAX_FILE_BYTES
 
     assert DEFAULT_MAX_FILE_BYTES <= 8 * 1024 * 1024
+
+
+def test_ignore_flag_drops_code_and_exit_code(tmp_path, capsys):
+    path = tmp_path / "broken.yml"
+    path.write_text(BROKEN, encoding="utf-8")  # GAL005 + GAL003/GAL006
+    assert main([str(path)]) == EXIT_FINDINGS
+    capsys.readouterr()  # первый прогон печатал GAL005 — он не считается
+    assert main([str(path), "--ignore", "GAL005,GAL003,GAL006,GAL004,GAL008,GAL009,GAL010"]) == EXIT_OK
+    assert "GAL005" not in capsys.readouterr().out
+
+
+def test_ignore_unknown_code_is_harmless(tmp_path, capsys):
+    path = tmp_path / "broken.yml"
+    path.write_text(BROKEN, encoding="utf-8")
+    assert main([str(path), "--ignore", "GAL999"]) == EXIT_FINDINGS
+    assert "GAL005" in capsys.readouterr().out
+
+
+def test_absence_alert_gets_gal001_but_can_be_ignored(tmp_path):
+    path = tmp_path / "absence.yml"
+    path.write_text(
+        "groups:\n"
+        "  - name: g\n"
+        "    interval: 1m\n"
+        "    rules:\n"
+        "      - uid: any-node-up\n"
+        "        title: Ни один узел не поднят\n"
+        "        condition: A\n"
+        "        for: 2m\n"
+        "        noDataState: Alerting\n"
+        "        execErrState: Alerting\n"
+        "        labels: {severity: critical}\n"
+        "        annotations: {summary: 'все узлы недоступны'}\n"
+        "        data: [{refId: A, model: {expr: 'sum(up) < 1', refId: A}}]\n",
+        encoding="utf-8",
+    )
+    assert main([str(path)]) == EXIT_FINDINGS
+    assert main([str(path), "--ignore", "GAL001"]) == EXIT_OK
