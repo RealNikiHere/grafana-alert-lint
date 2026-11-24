@@ -2,6 +2,13 @@
 
 __version__ = "0.1.0"
 
-from .linter import Finding, lint_document, lint_path
+from .linter import Finding, LintState, is_filtering_expression, lint_document, lint_path
 
-__all__ = ["Finding", "__version__", "lint_document", "lint_path"]
+__all__ = [
+    "Finding",
+    "LintState",
+    "__version__",
+    "is_filtering_expression",
+    "lint_document",
+    "lint_path",
+]

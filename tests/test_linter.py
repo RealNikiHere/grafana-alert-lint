@@ -100,9 +100,14 @@ def test_missing_for():
     assert "GAL004" in codes_of(rule)
 
 
-@pytest.mark.parametrize("text", ["диск меньше <10%", "up > 0 и всё"])
+@pytest.mark.parametrize("text", ["диск меньше <10%", "если < 5 минут"])
 def test_html_unsafe_annotation(text):
     assert "GAL005" in codes_of(base_rule(annotations={"summary": text}))
+
+
+def test_gt_in_annotation_is_safe():
+    # `>` в тексте Telegram не ломает: тег начинает только `<`.
+    assert codes_of(base_rule(annotations={"summary": "cpu > 90%"})) == []
 
 
 def test_angle_bracket_in_description():

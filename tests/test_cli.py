@@ -73,6 +73,7 @@ def test_json_format(tmp_path, capsys):
     assert payload["errors"] == 1
     assert payload["findings"][0]["code"] == "GAL005"
     assert {"code", "level", "path", "group", "rule", "message"} == set(payload["findings"][0])
+    assert payload["path_errors"] == []
 
 
 def test_directory_is_expanded_and_skips_venv(tmp_path, capsys):

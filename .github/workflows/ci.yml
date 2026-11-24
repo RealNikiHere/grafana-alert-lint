@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.12", "3.13"]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -37,9 +37,16 @@ jobs:
         run: pytest
       - name: Clean fixture must pass
         run: galint tests/fixtures/clean.yml
-      - name: Regression fixture must fail (GAL001)
+      - name: Regression fixture must fail with GAL001
+        # `set +e` вокруг galint обязателен: на находках он возвращает 1, и при
+        # `-eo pipefail` (дефолт GitHub Actions) пайплайн с grep дал бы 1 даже
+        # когда линтер сработал правильно.
         run: |
-          if galint tests/fixtures/regression-0003.yml; then
-            echo "линтер не поймал регрессию 0003"; exit 1
+          set +e
+          out="$(galint tests/fixtures/regression-0003.yml --format json)"
+          rc=$?
+          set -e
+          if [ "$rc" -ne 1 ]; then
+            echo "ожидался код выхода 1, получен $rc"; exit 1
           fi
-          galint tests/fixtures/regression-0003.yml --format json | grep -q GAL001
+          echo "$out" | grep -q '"code": "GAL001"'
