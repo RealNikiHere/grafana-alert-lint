@@ -86,5 +86,7 @@ jobs:
         run: |
           tar xzf dist/*.tar.gz
           cd grafana_alert_lint-*
-          python -m pip install --quiet pytest
+          # В распакованном sdist пакета ещё нет — ставим его с extras, иначе
+          # тесты падают на ModuleNotFoundError (а не проверяют упаковку).
+          python -m pip install --quiet ".[dev]"
           python -m pytest -q
