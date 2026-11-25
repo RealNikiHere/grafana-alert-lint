@@ -157,7 +157,11 @@ def readme_text() -> str:
 
 def readme_usage_block() -> str:
     """Первый ```bash-блок раздела про использование (README есть на двух языках)."""
-    match = re.search(r"^## (?:Usage|Использование)\s*\n+```bash\n(.*?)```", readme_text(), re.S | re.M)
+    match = re.search(
+        r"^## (?:Usage|Использование)\s*\n+```bash\n(.*?)```",
+        readme_text(),
+        re.DOTALL | re.MULTILINE,
+    )
     assert match, "в README нет раздела Usage/Использование с ```bash-блоком"
     return match.group(1)
 
