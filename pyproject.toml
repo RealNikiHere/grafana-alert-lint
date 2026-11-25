@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "grafana-alert-lint"
 dynamic = ["version"]
-description = "Линтер провижиненных правил алертов Grafana: находит правила, которые молча не работают"
+description = "Linter for provisioned Grafana alerting rules: finds rules that silently do not work"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"

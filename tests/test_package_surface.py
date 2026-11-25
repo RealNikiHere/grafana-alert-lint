@@ -156,10 +156,10 @@ def readme_text() -> str:
 
 
 def readme_usage_block() -> str:
-    """Содержимое первого ```bash-блока внутри раздела «Использование»."""
-    text = readme_text()
-    section = text.split("## Использование", 1)[1]
-    return section.split("```", 2)[1]
+    """Первый ```bash-блок раздела про использование (README есть на двух языках)."""
+    match = re.search(r"^## (?:Usage|Использование)\s*\n+```bash\n(.*?)```", readme_text(), re.S | re.M)
+    assert match, "в README нет раздела Usage/Использование с ```bash-блоком"
+    return match.group(1)
 
 
 def readme_console_example() -> tuple[str, list[str]]:

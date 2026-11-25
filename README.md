@@ -1,8 +1,15 @@
-# galint — линтер правил алертов Grafana
+# galint — a linter for Grafana alerting rules
 
-Правила алертов — это код, но проверяют их глазами и «а пришло ли сообщение».
-`galint` читает провижиненные правила Grafana и находит то, что не ломает
-деплой и не видно в UI: правила, которые **выглядят рабочими и не работают**.
+[English](README.md) | [Русский](README.ru.md)
+
+[![CI](https://github.com/RealNikiHere/grafana-alert-lint/actions/workflows/ci.yml/badge.svg)](https://github.com/RealNikiHere/grafana-alert-lint/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/grafana-alert-lint.svg)](https://pypi.org/project/grafana-alert-lint/)
+[![Python](https://img.shields.io/pypi/pyversions/grafana-alert-lint.svg)](https://pypi.org/project/grafana-alert-lint/)
+
+Alerting rules are code, but people review them by eye and by asking "did the
+message actually arrive?". `galint` reads provisioned Grafana alerting rules and
+finds the ones that survive deployment and are invisible in the UI: rules that
+**look like they work and don't**.
 
 ```console
 $ galint tests/fixtures/regression-0003.yml
@@ -11,150 +18,156 @@ tests/fixtures/regression-0003.yml:niki-server/Node exporter недоступе�
 ошибок: 1, предупреждений: 0
 ```
 
-Это настоящее правило из разбора 0003 — файл лежит в репозитории, вывод
-воспроизводится один в один.
+That is a real rule from an incident write-up (the fixture ships in the repo, so
+the output is reproducible byte for byte). Note that 0.1.0 prints messages in
+Russian; English messages are planned for 0.2.0.
 
-## Откуда взялось
+## Where it came from
 
-Две ошибки на живом сервере, каждая — сутки-двое мусора в канале дежурства.
-Полные разборы: [0003](https://github.com/RealNikiHere/niki-prod/blob/main/docs/postmortems/0003-2026-11-24-alert-stuck-firing.md)
-и [0004](https://github.com/RealNikiHere/niki-prod/blob/main/docs/postmortems/0004-2026-11-24-planned-outage-alert-storm.md).
+Two mistakes on a live server, each of them a day or two of noise in the on-call
+channel. Full write-ups:
+[0003](https://github.com/RealNikiHere/niki-prod/blob/main/docs/postmortems/0003-2026-11-24-alert-stuck-firing.md)
+and
+[0004](https://github.com/RealNikiHere/niki-prod/blob/main/docs/postmortems/0004-2026-11-24-planned-outage-alert-storm.md).
 
-**1. `up{job="node"} == 0` и `noDataState: Alerting`.** Когда сервер здоров,
-это выражение возвращает не ноль, а **ничего**: серия `up=1` отфильтрована.
-Grafana видит пустой результат, `noDataState: Alerting` превращает пустоту в
-аварию. Правило горит всегда и не может закрыться — `Resolved` не придёт
-никогда. Проверка «остановить exporter» при этом проходит: остановили —
-`Firing`, подняли — `Resolved`. Мониторинг работал строго наоборот.
+**1. `up{job="node"} == 0` with `noDataState: Alerting`.** While the server is
+healthy, this expression returns not zero but **nothing**: the `up=1` series is
+filtered out. Grafana sees an empty result, and `noDataState: Alerting` turns
+emptiness into an outage. The rule fires forever and can never resolve —
+`Resolved` never comes. The "stop the exporter" test passed, by the way: stop it
+— `Firing`, start it — `Resolved`. The monitoring worked exactly backwards.
 
-**2. `<` в тексте аннотации.** Grafana отправляет уведомления в Telegram с
-`parse_mode=HTML`. Символ `<` начинает тег, Telegram отвечает `400`, алерт
-срабатывает и **теряется**: ошибка видна только в логах Grafana. Правило
-было исправно, а сообщения не было.
+**2. `<` inside an annotation.** Grafana sends Telegram notifications with
+`parse_mode=HTML`. The `<` starts a tag, Telegram answers `400`, the alert fires
+and is **lost**: the error only shows up in the Grafana logs. The rule was fine;
+the message never arrived.
 
-Обе ошибки ловятся статически, без живого Grafana.
+Both problems are detectable statically, without a live Grafana.
 
-## Установка
+## Install
 
 ```bash
-pipx install grafana-alert-lint     # из PyPI (после публикации)
-# или
+pipx install grafana-alert-lint
+# or
 pip install git+https://github.com/RealNikiHere/grafana-alert-lint
 ```
 
-## Использование
+## Usage
 
 ```bash
-galint path/to/alert-rules.yml            # один файл
-galint metrics/grafana/provisioning/      # каталог, рекурсивно
-galint rules/ --format json               # для CI и парсинга
-galint rules/ --opinionated               # плюс вкусовые проверки (GAL002/004/008/009/010/011)
-galint rules/ --strict                    # предупреждения = ошибки
-galint rules/ --max-file-size 0           # без лимита на размер файла (4 МиБ по умолчанию)
-galint rules/ --ignore GAL001             # не считать GAL001 находкой
-python -m grafana_alert_lint rules/       # без установки entry point
+galint path/to/alert-rules.yml            # one file
+galint metrics/grafana/provisioning/      # directory, recursively
+galint rules/ --format json               # for CI and parsing
+galint rules/ --opinionated               # plus style checks (GAL002/004/008/009/010/011)
+galint rules/ --strict                    # warnings are errors
+galint rules/ --max-file-size 0           # no size limit (4 MiB by default)
+galint rules/ --ignore GAL001             # do not count GAL001 as a finding
+python -m grafana_alert_lint rules/       # without the entry point
 ```
 
-По умолчанию линтер молчит о вкусовом: «нет `for`», «нет `severity`», «`for`
-короче шага оценки». На чужом репозитории это десятки предупреждений, в
-которых тонет настоящая находка, поэтому такие проверки включаются явно.
+By default the linter stays quiet about matters of taste: no `for`, no
+`severity`, `for` shorter than the evaluation step. On somebody else's
+repository that is dozens of warnings with the real finding drowned in them, so
+those checks have to be asked for explicitly.
 
-Коды возврата:
+Exit codes:
 
-| Код | Когда |
-|-----|-------|
-| `0` | ошибок нет (предупреждения сами по себе не валят запуск) |
-| `1` | есть хотя бы одна ошибка; либо есть предупреждения при `--strict` |
-| `2` | часть путей не прочиталась: нет файла, битый YAML, нет прав, превышен лимит размера |
+| Code | Meaning |
+|------|---------|
+| `0` | no errors (warnings alone do not fail the run) |
+| `1` | at least one error; or warnings under `--strict` |
+| `2` | some paths could not be read: missing file, broken YAML, no permissions, size limit exceeded |
 
-При коде `2` отчёт по прочитанным файлам всё равно печатается, а причины — в
-stderr: в CI отдельно видно «правила сломаны синтаксически» и «правила
-сломаны по смыслу». Если нужно валить билд только на ошибках — хватает
-`galint rules/` без флагов.
+With code `2` the report for the files that *were* read is still printed, and
+the reasons go to stderr, so CI can tell "rules are syntactically broken" from
+"rules are semantically broken". To fail the build on errors only, plain
+`galint rules/` is enough.
 
-В GitHub Actions:
+In GitHub Actions:
 
 ```yaml
 - run: pipx install grafana-alert-lint && galint deploy/grafana/alerting/
 ```
 
-`--format json` отдаёт `{errors, warnings, path_errors, findings[]}` —
-для парсинга в CI и для `grep` по коду проверки.
+`--format json` emits `{errors, warnings, path_errors, findings[]}` — for CI
+parsing and for `grep`-ing by check code.
 
-## Что проверяется
+## What it checks
 
-| Код | Уровень | Проверка |
-|-----|---------|----------|
-| GAL001 | error | `noDataState: Alerting` при фильтрующем PromQL (`==`, `!=`, `>`, `<`, `>=`, `<=` без модификатора `bool`): на здоровом сервисе серия отфильтрована, результат пуст = вечный `Firing` |
-| GAL002 | warning † | `noDataState: NoData`: плановый разрыв метрик (сон, обслуживание) выглядит как авария |
-| GAL003 | error | `noDataState` не задан или неизвестен (Grafana принимает `OK`, `Alerting`, `NoData`, `KeepLast`) |
-| GAL004 | warning † | нет `for` или значение не длительность Grafana — срабатывание на первом промахе |
-| GAL005 | error | `<` в аннотации: Telegram `400` на `parse_mode=HTML`, сообщение теряется (`>` безвреден) |
-| GAL006 | error | `condition` не задан, ссылается на несуществующий `refId` или `data` пуст |
-| GAL007 | error | повторяющийся `uid` в пределах организации — провижининг перезапишет правило |
-| GAL007 | warning | повторяющийся `title` в пределах (организация, папка): до Grafana 11.6 провижининг такое отвергает, с 11.6 разрешает, но правила попадают в одну группу уведомлений |
-| GAL008 | warning † | нет `labels.severity` — нечем маршрутизировать |
-| GAL009 | warning † | нет `annotations.summary` — сообщение без сути |
-| GAL010 | warning † | нет `execErrState` или значение неизвестно |
-| GAL011 | warning † | `for` короче интервала группы (если `interval` не задан — считаем 1 минуту) — дебаунс меньше шага оценки |
-| GAL012 | error | у правила нет ни `uid`, ни `title` — его нельзя найти или замьютить |
-| GAL013 | error | `interval` группы не разбирается как длительность Grafana или не больше нуля |
+| Code | Level | Check |
+|------|-------|-------|
+| GAL001 | error | `noDataState: Alerting` together with a filtering PromQL comparison (`==`, `!=`, `>`, `<`, `>=`, `<=` without the `bool` modifier): on a healthy service the series is filtered out, the result is empty = permanent `Firing` |
+| GAL002 | warning † | `noDataState: NoData`: a planned metrics gap (sleep, maintenance) looks like an outage |
+| GAL003 | error | `noDataState` missing or unknown (Grafana accepts `OK`, `Alerting`, `NoData`, `KeepLast`) |
+| GAL004 | warning † | no `for`, or the value is not a Grafana duration — fires on the first miss |
+| GAL005 | error | `<` in an annotation: Telegram `400` under `parse_mode=HTML`, the message is lost (`>` is harmless) |
+| GAL006 | error | `condition` missing, pointing at an unknown `refId`, or `data` is empty |
+| GAL007 | error | duplicate `uid` within an organisation — provisioning silently overwrites a rule |
+| GAL007 | warning | duplicate `title` within (organisation, folder): before Grafana 11.6 provisioning rejects it, from 11.6 on it is allowed but the rules land in one notification group |
+| GAL008 | warning † | no `labels.severity` — nothing to route by |
+| GAL009 | warning † | no `annotations.summary` — the message has no substance |
+| GAL010 | warning † | no `execErrState`, or an unknown value |
+| GAL011 | warning † | `for` shorter than the group interval (1 minute when `interval` is absent) — debounce shorter than the evaluation step |
+| GAL012 | error | a rule with neither `uid` nor `title` — impossible to find or mute |
+| GAL013 | error | the group `interval` is not a Grafana duration, or is not greater than zero |
 
-† — вкусовая проверка: молчит без `--opinionated`. Это не про поломку
-провижининга, а про качество алертинга.
+† — style check: silent without `--opinionated`. It is about alerting quality,
+not about broken provisioning.
 
-Границы уникальности взяты из самого Grafana: `uid` уникален в пределах
-организации (`orgId`), `title` — в пределах организации и папки (`folder`).
-Одинаковый `uid` в `orgId: 1` и `orgId: 2` — норма; одинаковый `title`
-правила в разных папках — разные правила. Длительности разбираются как в
-Grafana: только целые части (`1h30m` — можно, `1.5s` — нет).
+The uniqueness scopes come from Grafana itself: `uid` is unique within an
+organisation (`orgId`), `title` — within an organisation and folder (`folder`).
+The same `uid` in `orgId: 1` and `orgId: 2` is fine; the same rule `title` in
+different folders is a different rule. Durations are parsed like Grafana does:
+integer parts only (`1h30m` is fine, `1.5s` is not).
 
-Проверки читают структуру провижининга (`groups[].rules[]`), тот же формат,
-что отдаёт Grafana API и что лежит в `provisioning/alerting/`.
+Checks read the provisioning structure (`groups[].rules[]`) — the same shape the
+Grafana API returns and that lives under `provisioning/alerting/`.
 
-## Что он НЕ проверяет
+## What it does NOT check
 
-Честно, потому что остальное — не статический анализ:
+Honestly, because the rest is not static analysis:
 
-- существует ли метрика и правильные ли у неё лейблы (нужен живой Prometheus);
-- правильна ли маршрутизация: contact point, mute timings, доставка;
-- не сработает ли правило на здоровом сервисе из-за неверного порога —
-  это проверяется экспериментом, а не линтером;
-- панели дашбордов и права доступа;
-- Grafana-managed recording rules (`record:` в элементе группы): проверки
-  алертов к ним не применяются (у них нет `condition`/`noDataState`), но
-  уникальность `uid` проверяется и для них — она нужна Grafana в пределах
-  организации;
-- уникальность `title` для Grafana 11.6 и новее: в
-  [PR #102067](https://github.com/grafana/grafana/pull/102067) ограничение
-  сняли, поэтому дубль `title` — предупреждение (GAL007), а не ошибка. Для
-  11.5 и старше это ошибка провижининга — тот же GAL007;
-- пустоту, которая возникает без сравнения (`absent(...)`, пустой vector
-  matcher) — GAL001 ищет именно сравнение в тексте выражения, причём
-  не считает сравнением ни строку в матчере лейбла, ни raw-строку в
-  backtick, ни сравнение с модификатором `bool` (оно возвращает 0/1 для всех
-  серий);
-- какое значение метрики считается здоровым. `up == 0` и `up == 1` — оба
-  сравнения, и оба — повод проверить правило, но ломаются они по-разному
-  (пустой результат против вечного `Firing`). GAL001 не угадывает сторону:
-  он говорит «здесь сравнение, проверь порог на живом сервисе»;
-- осознанный ли это «алерт на отсутствие». Связка `sum(up) < 1` или
-  `up == 0` с `noDataState: Alerting` — штатный приём «тревога, когда данных
-  нет»: пустой результат здесь и есть сигнал. Такое правило даст GAL001
-  честно, но это не ошибка — добавьте `--ignore GAL001` (или отдельный файл
-  с такими правилами в отдельном запуске).
+- whether a metric exists and whether its labels are right (needs a live
+  Prometheus);
+- whether routing is correct: contact points, mute timings, delivery;
+- whether a rule fires on a healthy service because of a wrong threshold — that
+  is established by experiment, not by a linter;
+- dashboards and access control;
+- Grafana-managed recording rules (`record:` in a group item): alert checks do
+  not apply to them (they have no `condition`/`noDataState`), but `uid`
+  uniqueness does — Grafana needs it within an organisation;
+- `title` uniqueness for Grafana 11.6 and newer: the constraint was removed in
+  [PR #102067](https://github.com/grafana/grafana/pull/102067), so a duplicate
+  `title` is a warning (GAL007), not an error. For 11.5 and older it is a
+  provisioning error — the same GAL007;
+- emptiness that arises without a comparison (`absent(...)`, an empty vector
+  matcher) — GAL001 looks specifically for a comparison in the expression text,
+  and does not count as a comparison a string inside a label matcher, a raw
+  string in backticks, or a comparison with the `bool` modifier (that one
+  returns 0/1 for every series);
+- which metric value counts as healthy. `up == 0` and `up == 1` are both
+  comparisons and both a reason to look at the rule, but they break differently
+  (empty result versus permanent `Firing`). GAL001 does not guess a side: it
+  says "there is a comparison here, check the threshold against the live
+  service";
+- whether this is a deliberate "alert on absence". `sum(up) < 1` or `up == 0`
+  with `noDataState: Alerting` is a legitimate pattern ("alert when the data is
+  gone"): the empty result *is* the signal. Such a rule will honestly get
+  GAL001; it is not a mistake — add `--ignore GAL001` (or keep such rules in a
+  separate run).
 
-Для PromQL есть `promtool check rules`, для дашбордов — `grizzly`. `galint`
-дополняет их, а не заменяет: он про семантику алертинга, а не про синтаксис.
+For PromQL there is `promtool check rules`, for dashboards — `grizzly`. `galint`
+complements them rather than replacing them: it is about alerting semantics, not
+about syntax.
 
-Инструмент рассчитан на локальный запуск по своим правилам: файл читается
-целиком, YAML разбирается только через `yaml.safe_load_all` (код не
-выполняется), stdin (`galint -`) не поддерживается. Разбор YAML раздувает
-память примерно в 70–80 раз к размеру файла, поэтому файлы больше 4 МиБ по
-умолчанию отклоняются с ошибкой (лимит меняется флагом `--max-file-size`, `0` —
-без лимита). Реальные провижининги — килобайты, 4 МиБ это уже ~300 МБ памяти.
+The tool is meant to be run locally against your own rules: a file is read whole
+and parsed with `yaml.safe_load_all` only (no code execution); stdin
+(`galint -`) is not supported. YAML parsing amplifies memory roughly 70–80×
+against the file size, so files above 4 MiB are rejected by default
+(`--max-file-size`, `0` disables the limit). Real provisioning files are
+kilobytes; 4 MiB is already ~300 MB of memory.
 
-## Разработка
+## Development
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
@@ -162,11 +175,11 @@ pip install -e ".[dev]"
 pytest && ruff check .
 ```
 
-Фикстура `tests/fixtures/regression-0003.yml` — настоящее правило из инцидента;
-тест требует, чтобы линтер на нём падал. CI дополнительно проверяет, что
-`galint` возвращает `1` на этой фикстуре и `0` на чистой.
+The fixture `tests/fixtures/regression-0003.yml` is a real rule from the
+incident; a test requires the linter to fail on it. CI additionally checks that
+`galint` exits `1` on that fixture and `0` on the clean one.
 
-## Лицензия
+## License
 
-Apache-2.0 — можно использовать в корпоративной среде, есть явный патентный
-грант. Условия в [LICENSE](LICENSE).
+Apache-2.0 — usable in a corporate environment, with an explicit patent grant.
+See [LICENSE](LICENSE).

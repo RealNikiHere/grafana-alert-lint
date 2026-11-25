@@ -1,4 +1,5 @@
 include CHANGELOG.md
+include README.ru.md
 include LICENSE
 graft tests
 global-exclude __pycache__/*
